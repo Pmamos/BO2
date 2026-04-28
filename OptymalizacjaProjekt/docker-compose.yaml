@@ -1,0 +1,30 @@
+services:
+  # 1. TABLICA OGŁOSZEŃ (Gotowy kontener z Redisem)
+  redis:
+    image: redis:8.6.2-alpine
+    ports:
+      - "6379:6379"
+
+  # 2. NASZ KELNER (API na bazie Twojego Dockerfile)
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src  # Żeby kod odświeżał się bez przebudowy!
+    command: ["uvicorn", "src.backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      - redis
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+
+  # 3. NASZ KUCHARZ (Celery)
+  worker:
+    build: .
+    volumes:
+      - ./src:/app/src
+    command: ["celery", "-A", "src.backend.core.worker:celery_app", "worker", "--loglevel=info"]
+    depends_on:
+      - redis
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0

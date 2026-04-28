@@ -3,29 +3,12 @@ import math
 import random
 from typing import NewType, Union
 from copy import deepcopy
+from src.backend.core.constants import PLANTS_DB
 
-"""Plant = NewType('Plant', str)
-Earnings = NewType('Earnings', dict)
-Degradation = NewType('Degradation', dict)"""
 
 PLANTS = ['potato', 'wheat', 'rye', 'triticale', 'pickled_corn', 'corn', 'rape', 'EMPTY']
 MQ = 100  # Maksymalna jakość gleby
 
-"""
-fieldNumber, N - Liczba dostępnych pól uprawnych.
-yearsNumber, Y - Liczba lat planowania upraw.
-transportCost, T - Stały koszt dojazdu na kilometr
-fieldsSurfacesList, P - Lista powierzchnii poszczególnych pól uprawnych w hektarach
-distanceMatrix, D - Lista odległości poszczególnych pól od gospodarstwa
-productionCostDict - Słownik kosztów produkcji danej rosliny na jeden hektar (koszt materiału siewnego,
-    koszt pracy ludzkiej, itp.)
-plantInfluenceDict, W - Słownik wpływów poszczególnych upraw na glebe
-earningsMatrix, G - Macierz zysków z danej uprawy.
-Q - Macierz jakości gleby na danym polu w danym roku
-decisionMatrix, X - Macierz decyzyjna zawieracjąca informacje o wybranych roślinach do uprawy na dany polu w danym
-    roku
-S - Słownik zamieniający nazwę roślny na przydzielony jej indeks
-"""
 
 
 class FarmSimulation(object):
@@ -110,46 +93,58 @@ class FarmSimulation(object):
         # dodatkowy warunek logiczny zapewniający że puste pole nie powtatrza się dwa razy pod rząd
         if len(self.decisionMatrix) > 0:
             for prev, cur in zip(self.decisionMatrix[-1], yearly_decision):
-                if cur != 'EMPTY':
-                    if prev == cur:
-                        raise ValueError
+                if cur != 'EMPTY' and prev == cur:
+                    raise ValueError("Nie można sadzić tej samej rośliny rok po roku!")
 
         # po zapewnieniu zgodności dodajemy nasze rozwiązanie do macierzy decyzyjnej
         self.decisionMatrix.append(yearly_decision)
 
         # przejście po wszystkich polach w roku
         for i in range(self.fieldNumber):
-            plant = self.decisionMatrix[self.curr_year][i]
+            plant_name = self.decisionMatrix[self.curr_year][i]
+            plant_data = PLANTS_DB[plant_name] # Wyciągamy wszystko o roślinie z naszej nowej bazy!
 
-            # aktualizacja jakości gleby na danym polu po uprawie rośliny (nie zerowy rok)
             if self.curr_year != 0:
-                # odjęcie jakości po uprawie rośliny w tym roku od jakości z poprzedniego roku
-                self.Q[self.curr_year][i] = self.Q[self.curr_year - 1][i] - self.plantInfluenceDict[
-                    self.decisionMatrix[self.curr_year - 1][i]] if self.decisionMatrix[self.curr_year - 1][i] != 'EMPTY' \
-                    else self.Q[self.curr_year - 1][i] - self.plantInfluenceDict[
-                    self.decisionMatrix[self.curr_year - 1][i]](self.Q[self.curr_year - 1][i])
+                prev_plant_name = self.decisionMatrix[self.curr_year - 1][i]
+                
+                # --- MAGIA REGENERACJI GLEBY ---
+                if prev_plant_name == 'EMPTY':
+                    # Jeśli rok temu pole leżało odłogiem, stosujemy Twój wzór na regenerację
+                    current_q = self.Q[self.curr_year - 1][i]
+                    regeneration = int(-4 + 4 * (current_q**2 / (MQ**2)))
+                    self.Q[self.curr_year][i] = current_q - regeneration
+                else:
+                    # Jeśli coś rosło, odejmujemy wpływ tej rośliny na glebę
+                    prev_plant_data = PLANTS_DB[prev_plant_name]
+                    self.Q[self.curr_year][i] = self.Q[self.curr_year - 1][i] - prev_plant_data.soil_influence
 
-                # zabezpieczenie przed spadkiem jakości poniżej dolnej granicy (<0)
+                # Zabezpieczenie przed spadkiem jakości poniżej zera
                 if self.Q[self.curr_year][i] < 0:
-                    raise IndexError
+                    raise IndexError("Jakość gleby spadła poniżej zera!")
 
-                # obliczanie przychodu, jeśli dwa razy nie uprawiamy to zerowy przychód
-                income = 0 if self.decisionMatrix[self.curr_year - 1][i] == plant == 'EMPTY' else (
-                        self.fieldsSurfacesList[i] * self.earningsMatrix[plant][math.ceil(self.Q[self.curr_year][i])])
+                # Obliczanie przychodu
+                if prev_plant_name == 'EMPTY' and plant_name == 'EMPTY':
+                    income = 0
+                else:
+                    q_index = math.ceil(self.Q[self.curr_year][i])
+                    # Zabezpieczenie przed wyjściem indeksu jakości poza tablicę 0-99
+                    q_index = max(0, min(q_index, MQ - 1)) 
+                    income = self.fieldsSurfacesList[i] * plant_data.earnings_matrix[q_index]
 
             else:
-                # obliczanie przychodu jeśli rok zerowy, nie trzeba sprawdzać poprzedniego roku
-                income = self.fieldsSurfacesList[i] * self.earningsMatrix[plant][math.ceil(self.Q[self.curr_year][i])]
+                # Rok zerowy
+                q_index = math.ceil(self.Q[self.curr_year][i])
+                q_index = max(0, min(q_index, MQ - 1))
+                income = self.fieldsSurfacesList[i] * plant_data.earnings_matrix[q_index]
 
-            # obliczanie kosztów uprawy w obecnym roku
-            expense = 0 if plant == 'EMPTY' else (self.productionCostDict[plant] * self.fieldsSurfacesList[i] +
-                                                  self.distanceMatrix[
-                                                      i] * self.transportCost)  # Jeśli nic nie siejemy to nie ponosimy kosztów
+            # Wydatki
+            if plant_name == 'EMPTY':
+                expense = 0
+            else:
+                expense = (plant_data.production_cost * self.fieldsSurfacesList[i]) + (self.distanceMatrix[i] * self.transportCost)
 
-            # od łącznego przychodu trzeba odjąć wydatki
-            self.earnings += income - expense
+            self.earnings += (income - expense)
 
-        # następny rok, aktualizacja countera
         self.curr_year += 1
 
     def simulate_farm(self, decision_matrix_X: list[list]):
